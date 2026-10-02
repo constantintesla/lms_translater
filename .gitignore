@@ -1,0 +1,17 @@
+# environments, models, runtime data
+venv*/
+**/venv*/
+data/
+data_test*/
+**/models/
+**/work/
+__pycache__/
+*.pyc
+*.sqlite
+.env
+.claude/
+
+# course content and experiments are not part of the service
+out/
+dub/
+specs/

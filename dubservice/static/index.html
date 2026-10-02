@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Переозвучка лекций</title>
+<style>
+  :root { --bg:#fafaf9; --fg:#1c1917; --mut:#78716c; --line:#e7e5e4; --card:#fff; --acc:#2563eb; --ok:#16a34a; --warn:#d97706; --bad:#dc2626; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#141413; --fg:#f5f5f4; --mut:#a8a29e; --line:#2e2c2a; --card:#1c1b1a; --acc:#60a5fa; --ok:#4ade80; --warn:#fbbf24; --bad:#f87171; } }
+  * { box-sizing:border-box }
+  body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.5 system-ui,sans-serif }
+  main { max-width:1100px; margin:0 auto; padding:16px }
+  h1 { font-size:20px; margin:8px 0 12px } h2 { font-size:16px; margin:0 0 8px }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px; margin-bottom:14px }
+  .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center }
+  input, select, textarea, button { font:inherit; color:inherit; background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:6px 10px }
+  button { cursor:pointer } button.primary { background:var(--acc); border-color:var(--acc); color:#fff }
+  button.danger { color:var(--bad) } button:disabled { opacity:.5; cursor:default }
+  table { width:100%; border-collapse:collapse } td, th { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); vertical-align:top }
+  th { color:var(--mut); font-weight:500; font-size:13px }
+  .badge { display:inline-block; padding:1px 8px; border-radius:99px; font-size:12px; border:1px solid var(--line) }
+  .done { color:var(--ok) } .failed { color:var(--bad) } .awaiting_review { color:var(--warn) } .running { color:var(--acc) }
+  .bar { height:6px; background:var(--line); border-radius:3px; overflow:hidden; min-width:80px } .bar i { display:block; height:100%; background:var(--acc) }
+  .mut { color:var(--mut); font-size:13px } .ok { color:var(--ok) } .warn { color:var(--warn) } .bad { color:var(--bad) }
+  textarea { width:100%; min-height:56px; resize:vertical }
+  #cTexts table { table-layout:fixed } #cTexts th:nth-child(1) { width:96px } #cTexts td { word-break:break-word }
+  details { margin-top:10px } summary { cursor:pointer }
+  #units table { table-layout:fixed } #units th:nth-child(1) { width:36px } #units th:nth-child(2) { width:86px } #units th:nth-child(5) { width:64px } #units th:nth-child(3), #units th:nth-child(4) { width:auto }
+  video { width:100%; max-height:340px; background:#000; border-radius:8px }
+  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:12px } @media (max-width:700px) { .grid2 { grid-template-columns:1fr } }
+  pre { white-space:pre-wrap; font-size:12px; max-height:220px; overflow:auto; background:var(--bg); padding:8px; border-radius:8px }
+  tr.sel { background:color-mix(in srgb, var(--acc) 8%, transparent) } tr.job { cursor:pointer }
+</style>
+</head>
+<body>
+<main>
+  <h1>Переозвучка лекций на русский</h1>
+  <div id="health" class="card mut"></div>
+
+  <div class="card">
+    <h2>Новая задача</h2>
+    <div class="row">
+      <input type="file" id="file" accept="video/*">
+      <label><input type="checkbox" id="review" checked> проверить перевод перед озвучкой</label>
+      <button class="primary" id="upload">Загрузить и запустить</button>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <input id="course" placeholder="ID курса в Teachbase" size="22">
+      <button id="loadVideos">Показать видео курса</button>
+    </div>
+    <div id="videos" style="margin-top:8px"></div>
+  </div>
+
+  <div class="card">
+    <h2>Задачи</h2>
+    <table><thead><tr><th>Название</th><th>Статус</th><th>Этап</th><th></th></tr></thead><tbody id="jobs"></tbody></table>
+  </div>
+
+  <div id="detail"></div>
+</main>
+
+<script>
+const $ = s => document.querySelector(s);
+let TOKEN = localStorage.getItem("dubToken") || "";
+let current = null, dirty = false, shownKey = "";
+
+async function api(path, opts = {}) {
+  opts.headers = Object.assign({}, opts.headers, TOKEN ? { Authorization: "Bearer " + TOKEN } : {});
+  const r = await fetch("/api" + path, opts);
+  if (r.status === 401) { TOKEN = prompt("Токен доступа (DUB_API_TOKEN)") || ""; localStorage.setItem("dubToken", TOKEN); return api(path, opts); }
+  if (!r.ok) { let m = r.statusText; try { m = (await r.json()).detail || m; } catch (e) {} throw new Error(m); }
+  return r.json();
+}
+const media = p => "/api" + p + (TOKEN ? "?token=" + encodeURIComponent(TOKEN) : "");
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const STATUS = { queued: "в очереди", running: "выполняется", awaiting_review: "ждёт проверки", approved: "утверждено", done: "готово", failed: "ошибка" };
+const STAGE = { fetch: "загрузка", asr: "расшифровка", translate: "перевод", review: "проверка", dub: "озвучка", done: "",
+  course_snapshot: "чтение курса", course_texts: "перевод текстов", course_pdfs: "перевод документов", package: "сборка пакета", push: "отправка" };
+
+async function health() {
+  try {
+    const h = await api("/health");
+    const f = (ok, t) => `<span class="${ok ? "ok" : "bad"}">${ok ? "●" : "○"} ${t}</span>`;
+    $("#health").innerHTML = [f(h.ffmpeg, "ffmpeg"), f(!!h.gpu, "GPU: " + esc(h.gpu || "не найден")), f(h.llm.ok, "LLM: " + esc(h.llm.models[0] || h.llm.url)),
+      f(h.tts_weights, "веса озвучки"), f(h.teachbase_keys, "ключи Teachbase")].join(" &nbsp; ");
+  } catch (e) { $("#health").textContent = "Сервис недоступен: " + e.message; }
+}
+
+async function refresh() {
+  const jobs = await api("/jobs");
+  $("#jobs").innerHTML = jobs.map(j => `<tr class="job ${current === j.id ? "sel" : ""}" data-id="${j.id}">
+    <td>${esc(j.title)}</td><td><span class="badge ${j.status}">${STATUS[j.status] || j.status}</span></td>
+    <td>${STAGE[j.stage] ?? j.stage} ${j.status === "running" && j.progress.pct != null ? `<div class="bar"><i style="width:${j.progress.pct}%"></i></div>` : ""}<span class="mut">${esc(j.progress.msg || "")}</span></td>
+    <td><button class="danger" data-del="${j.id}">×</button></td></tr>`).join("") || `<tr><td colspan="4" class="mut">Пока пусто</td></tr>`;
+  if (current && !dirty) showJob(current, false);
+}
+
+$("#jobs").addEventListener("click", async e => {
+  const del = e.target.closest("[data-del]");
+  if (del) { if (confirm("Удалить задачу и все файлы?")) { try { await api("/jobs/" + del.dataset.del, { method: "DELETE" }); if (current === del.dataset.del) { current = null; $("#detail").innerHTML = ""; } refresh(); } catch (err) { alert(err.message); } } return; }
+  const tr = e.target.closest("tr.job"); if (tr) { current = tr.dataset.id; dirty = false; showJob(current, true); refresh(); }
+});
+
+$("#upload").onclick = async () => {
+  const f = $("#file").files[0]; if (!f) return alert("Выберите видеофайл");
+  const fd = new FormData(); fd.append("file", f); fd.append("review", $("#review").checked);
+  try { const j = await api("/jobs", { method: "POST", body: fd }); current = j.id; $("#file").value = ""; refresh(); } catch (e) { alert(e.message); }
+};
+
+$("#loadVideos").onclick = async () => {
+  const id = $("#course").value.trim(); if (!id) return;
+  $("#videos").textContent = "Загрузка…";
+  try {
+    const r = await api(`/teachbase/courses/${id}/videos`);
+    $("#videos").innerHTML = `<div class="mut">Курс: ${esc(r.course)}</div>` + (r.videos.map(v => `<label style="display:block"><input type="checkbox" value="${v.material_id}" checked> ${esc(v.section)} — ${esc(v.name)}</label>`).join("") || "Видео не найдено")
+      + `<button class="primary" id="enqueue" style="margin-top:6px">Запустить выбранные</button>`;
+    $("#enqueue").onclick = async () => {
+      const ids = [...$("#videos").querySelectorAll("input:checked")].map(i => +i.value);
+      try { await api("/jobs/teachbase", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ course_id: +id, material_ids: ids, review: $("#review").checked }) }); $("#videos").innerHTML = ""; refresh(); } catch (e) { alert(e.message); }
+    };
+  } catch (e) { $("#videos").innerHTML = `<span class="bad">${esc(e.message)}</span>`; }
+};
+
+async function showJob(id, full) {
+  const j = await api("/jobs/" + id);
+  if (j.kind === "course") return showCourse(j, full);
+  let html = `<div class="card"><h2>${esc(j.title)}</h2><div class="mut">${STATUS[j.status] || j.status}${j.source_lang ? " · язык оригинала: " + j.source_lang : ""}</div>`;
+  if (j.error) html += `<pre class="bad">${esc(j.error)}</pre>`;
+  html += `<div class="row" style="margin:8px 0">`;
+  if (j.status === "awaiting_review") html += `<button id="save">Сохранить правки</button><button class="primary" id="approve">Утвердить и озвучить</button>`;
+  if (["failed", "done", "awaiting_review"].includes(j.status)) html += `<select id="stage"><option value="dub">заново озвучить</option><option value="translate">заново перевести</option><option value="asr">всё заново</option></select><button id="retry">Повторить</button>`;
+  html += `</div>`;
+  if (j.status === "done" || j.has_result) html += `<div class="grid2"><div><div class="mut">Оригинал</div><video controls src="${media(`/jobs/${id}/source`)}"></video></div><div><div class="mut">Русская озвучка · <a href="${media(`/jobs/${id}/result`)}">скачать</a></div><video controls src="${media(`/jobs/${id}/result`)}"></video></div></div>`;
+  html += `<div id="units"></div><details><summary class="mut">Лог</summary><pre id="log"></pre></details></div>`;
+  const key = [j.id, j.status, j.has_units, j.has_result, j.error].join("|");
+  if (!full && key === shownKey) return;     // polling must not wipe a translation being edited
+  shownKey = key; $("#detail").innerHTML = html;
+  bindJob(j);
+}
+
+async function bindJob(j) {
+  const id = j.id;
+  $("#log").textContent = (await api(`/jobs/${id}/log`)).log;
+  if (j.has_units) {
+    const d = await api(`/jobs/${id}/units`), editable = j.status === "awaiting_review";
+    $("#units").innerHTML = `<table><thead><tr><th>#</th><th>Время</th><th>Оригинал</th><th>Перевод</th><th>Длина</th></tr></thead><tbody>${d.units.map(u => `<tr><td>${u.i}</td><td class="mut">${u.start.toFixed(1)}–${u.end.toFixed(1)}</td><td>${esc(u.src)}</td>
+      <td>${editable ? `<textarea data-i="${u.i}" data-b="${u.budget || 0}">${esc(u.tgt)}</textarea>` : esc(u.tgt)}</td><td class="mut" data-len="${u.i}">${lenCell(u.tgt, u.budget)}</td></tr>`).join("")}</tbody></table>`;
+    $("#units").addEventListener("input", e => { const t = e.target; if (!t.dataset.i) return; dirty = true; document.querySelector(`[data-len="${t.dataset.i}"]`).innerHTML = lenCell(t.value, +t.dataset.b); });
+  }
+  const call = (p, o) => api(p, o).then(() => { dirty = false; refresh(); showJob(id, true); }).catch(e => alert(e.message));
+  const edits = () => [...document.querySelectorAll("#units textarea")].map(t => ({ i: +t.dataset.i, tgt: t.value }));
+  const save = () => api(`/jobs/${id}/units`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ units: edits() }) });
+  if ($("#save")) $("#save").onclick = () => save().then(() => { dirty = false; alert("Сохранено"); }).catch(e => alert(e.message));
+  if ($("#approve")) $("#approve").onclick = () => save().then(() => call(`/jobs/${id}/approve`, { method: "POST" })).catch(e => alert(e.message));
+  if ($("#retry")) $("#retry").onclick = () => call(`/jobs/${id}/retry?stage=${$("#stage").value}`, { method: "POST" });
+}
+
+function lenCell(t, b) {
+  const n = (t || "").length; if (!b) return n;
+  const cls = n > b * 1.2 ? "bad" : n > b ? "warn" : "ok";
+  return `<span class="${cls}">${n}/${b}</span>`;
+}
+
+health(); refresh(); setInterval(refresh, 3000); setInterval(health, 30000);
+</script>
+<script src="course.js"></script>
+</body>
+</html>

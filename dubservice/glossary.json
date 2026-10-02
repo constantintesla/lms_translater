@@ -1,0 +1,16 @@
+{
+  "Python": "Python (не переводить)",
+  "dictionary / dictionaries": "словарь / словари",
+  "key-value pair": "пара «ключ — значение»",
+  "list": "список",
+  "tuple": "кортеж",
+  "set": "множество",
+  "string": "строка",
+  "loop": "цикл",
+  "function": "функция",
+  "decorator": "декоратор",
+  "module": "модуль",
+  "variable": "переменная",
+  "data analyst": "аналитик данных",
+  "dataset": "набор данных"
+}
